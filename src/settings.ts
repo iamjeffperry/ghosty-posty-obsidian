@@ -19,7 +19,7 @@ export class GhostyPostySettingTab extends PluginSettingTab {
         // Ghost URL setting
         new Setting(containerEl)
             .setName('Ghost admin URL')
-            .setDesc('The URL of your ghost instance (e.g., https://myblog.com)')
+            .setDesc('The URL of your Ghost instance (e.g., https://myblog.com)')
             .addText(text => text
                 .setPlaceholder('https://myblog.com')
                 .setValue(this.plugin.settings.ghostUrl)
@@ -31,7 +31,7 @@ export class GhostyPostySettingTab extends PluginSettingTab {
         // API Key setting
         new Setting(containerEl)
             .setName('Admin API key')
-            .setDesc('Your ghost admin API key (found in ghost admin → settings → integrations)')
+            .setDesc('Your Ghost admin API key (found in Ghost admin → settings → integrations)')
             .addText(text => {
                 text
                     .setValue(this.plugin.settings.apiKey)
@@ -113,7 +113,7 @@ export class GhostyPostySettingTab extends PluginSettingTab {
             .setHeading();
 
         const helpList = containerEl.createEl('ol');
-        helpList.createEl('li', { text: 'Go to your ghost admin panel' });
+        helpList.createEl('li', { text: 'Go to your Ghost admin panel' });
         helpList.createEl('li', { text: 'Navigate to settings → integrations' });
         helpList.createEl('li', { text: 'Click "add custom integration"' });
         helpList.createEl('li', { text: 'Give it a name (example: "publish to blog")' });

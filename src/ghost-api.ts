@@ -1,5 +1,16 @@
 import { requestUrl, RequestUrlResponse } from 'obsidian';
-import { GhostPostPayload, GhostPostResponse, GhostSiteResponse, GhostErrorResponse, GhostImageUploadResponse } from './types';
+import { GhostPostPayload, GhostPostResponse, GhostPostResult, GhostSiteResponse, GhostErrorResponse, GhostImageUploadResponse, GhostNewslettersResponse, GhostNewsletter } from './types';
+
+/** Options controlling how a create/update is delivered. */
+export interface PublishOptions {
+    /** When set, the post is also sent to this newsletter (by slug). */
+    newsletterSlug?: string;
+}
+
+/** A successful result carrying the affected post, or a failure with a message. */
+export type PostResult =
+    | { success: true; post: GhostPostResult }
+    | { success: false; error: string };
 
 /**
  * Convert a hex string to Uint8Array
@@ -164,32 +175,99 @@ export class GhostAPI {
     }
 
     /**
+     * Build the query string for a create/update, wiring up the source format
+     * and (optionally) a newsletter send.
+     */
+    private buildPostQuery(options?: PublishOptions): string {
+        const params = new URLSearchParams();
+        // Use source=html to let Ghost convert our HTML to its internal format
+        params.set('source', 'html');
+        if (options?.newsletterSlug) {
+            params.set('newsletter', options.newsletterSlug);
+        }
+        return `?${params.toString()}`;
+    }
+
+    /**
      * Create a new post on Ghost
      */
-    async createPost(payload: GhostPostPayload): Promise<{ success: true; post: GhostPostResponse['posts'][0] } | { success: false; error: string }> {
+    async createPost(payload: GhostPostPayload, options?: PublishOptions): Promise<PostResult> {
         try {
-            // Use source=html to let Ghost convert HTML to its internal format
-            const response = await this.request('POST', '/posts/?source=html', payload);
-
-            if (response.status >= 200 && response.status < 300) {
-                const data = response.json as GhostPostResponse;
-                return {
-                    success: true,
-                    post: data.posts[0]
-                };
-            } else {
-                const errorData = response.json as GhostErrorResponse;
-                return {
-                    success: false,
-                    error: errorData.errors?.[0]?.message || `HTTP ${response.status}`
-                };
-            }
+            const response = await this.request('POST', `/posts/${this.buildPostQuery(options)}`, payload);
+            return this.parsePostResponse(response);
         } catch (error) {
             return {
                 success: false,
                 error: error instanceof Error ? error.message : 'Unknown error'
             };
         }
+    }
+
+    /**
+     * Update an existing post on Ghost. The payload's post MUST include the
+     * current `updated_at` (from getPost) so Ghost can detect collisions.
+     */
+    async updatePost(id: string, payload: GhostPostPayload, options?: PublishOptions): Promise<PostResult> {
+        try {
+            const response = await this.request('PUT', `/posts/${id}/${this.buildPostQuery(options)}`, payload);
+            return this.parsePostResponse(response);
+        } catch (error) {
+            return {
+                success: false,
+                error: error instanceof Error ? error.message : 'Unknown error'
+            };
+        }
+    }
+
+    /**
+     * Fetch a single post by id, including its rendered HTML content.
+     */
+    async getPost(id: string): Promise<PostResult> {
+        try {
+            const response = await this.request('GET', `/posts/${id}/?formats=html`);
+            return this.parsePostResponse(response);
+        } catch (error) {
+            return {
+                success: false,
+                error: error instanceof Error ? error.message : 'Unknown error'
+            };
+        }
+    }
+
+    /**
+     * List the site's active newsletters (for the delivery picker).
+     * Returns an empty list on failure so callers can degrade gracefully.
+     */
+    async getNewsletters(): Promise<GhostNewsletter[]> {
+        try {
+            const response = await this.request('GET', '/newsletters/?filter=status:active&limit=all');
+            if (response.status >= 200 && response.status < 300) {
+                const data = response.json as GhostNewslettersResponse;
+                return data.newsletters ?? [];
+            }
+            return [];
+        } catch {
+            return [];
+        }
+    }
+
+    /**
+     * Parse a Ghost posts response into a PostResult.
+     */
+    private parsePostResponse(response: RequestUrlResponse): PostResult {
+        if (response.status >= 200 && response.status < 300) {
+            const data = response.json as GhostPostResponse;
+            const post = data.posts?.[0];
+            if (!post) {
+                return { success: false, error: 'Ghost returned no post data' };
+            }
+            return { success: true, post };
+        }
+        const errorData = response.json as GhostErrorResponse;
+        return {
+            success: false,
+            error: errorData.errors?.[0]?.message || `HTTP ${response.status}`
+        };
     }
 
     /**
