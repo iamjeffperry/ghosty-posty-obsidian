@@ -1,7 +1,18 @@
-import { Plugin, Notice, TFile } from 'obsidian';
-import { GhostyPostySettings, DEFAULT_SETTINGS, PostMetadata, PostStatus } from './types';
+import { Plugin, Notice, TFile, Menu, Editor, MarkdownView, htmlToMarkdown } from 'obsidian';
+import {
+    GhostyPostySettings,
+    DEFAULT_SETTINGS,
+    PostMetadata,
+    PostStatus,
+    PostVisibility,
+    GhostPostRef,
+    GhostPostResult,
+    FRONTMATTER_KEYS
+} from './types';
 import { GhostyPostySettingTab } from './settings';
 import { PublishModal } from './publish-modal';
+import { SyncModal } from './sync-modal';
+import { GhostAPI } from './ghost-api';
 import { convertMarkdownToHtml } from './markdown-converter';
 
 export default class GhostyPostyPlugin extends Plugin {
@@ -10,19 +21,63 @@ export default class GhostyPostyPlugin extends Plugin {
     async onload() {
         await this.loadSettings();
 
-        // Register the publish command
+        // Command: publish / update the current note
         this.addCommand({
             id: 'publish-to-ghost',
-            name: 'Publish to ghost',
-            callback: () => this.publishCurrentNote()
+            name: 'Publish to Ghost',
+            editorCallback: (_editor, ctx) => {
+                const file = ctx.file;
+                if (file) {
+                    void this.publishNote(file);
+                }
+            }
         });
+
+        // Command: pull the latest version of a published note back from Ghost
+        this.addCommand({
+            id: 'sync-from-ghost',
+            name: 'Sync from Ghost',
+            editorCallback: (_editor, ctx) => {
+                const file = ctx.file;
+                if (file) {
+                    void this.syncNote(file);
+                }
+            }
+        });
+
+        // Ribbon icon (Lucide "ghost") as a one-click entry point
+        this.addRibbonIcon('ghost', 'Publish to Ghost', () => {
+            const file = this.getActiveFile();
+            if (file) {
+                void this.publishNote(file);
+            }
+        });
+
+        // Right-click in the file explorer
+        this.registerEvent(
+            this.app.workspace.on('file-menu', (menu, file) => {
+                if (file instanceof TFile && file.extension === 'md') {
+                    this.addMenuItems(menu, file);
+                }
+            })
+        );
+
+        // Right-click inside the editor
+        this.registerEvent(
+            this.app.workspace.on('editor-menu', (menu: Menu, _editor: Editor, view: MarkdownView) => {
+                const file = view.file;
+                if (file instanceof TFile && file.extension === 'md') {
+                    this.addMenuItems(menu, file);
+                }
+            })
+        );
 
         // Add settings tab
         this.addSettingTab(new GhostyPostySettingTab(this.app, this));
     }
 
     onunload() {
-        // Cleanup if needed
+        // Cleanup handled by registerEvent / addCommand
     }
 
     async loadSettings() {
@@ -35,7 +90,34 @@ export default class GhostyPostyPlugin extends Plugin {
     }
 
     /**
-     * Get the currently active markdown file
+     * Add the plugin's context-menu items for a given note.
+     */
+    private addMenuItems(menu: Menu, file: TFile): void {
+        const isPublished = this.getExistingRef(file) !== undefined;
+
+        menu.addItem((item) => {
+            item
+                .setTitle(isPublished ? 'Update on Ghost' : 'Publish to Ghost')
+                .setIcon('ghost')
+                .onClick(() => {
+                    void this.publishNote(file);
+                });
+        });
+
+        if (isPublished) {
+            menu.addItem((item) => {
+                item
+                    .setTitle('Sync from Ghost')
+                    .setIcon('download')
+                    .onClick(() => {
+                        void this.syncNote(file);
+                    });
+            });
+        }
+    }
+
+    /**
+     * Get the currently active markdown file, notifying the user if there isn't one.
      */
     private getActiveFile(): TFile | null {
         const activeFile = this.app.workspace.getActiveFile();
@@ -48,6 +130,23 @@ export default class GhostyPostyPlugin extends Plugin {
             return null;
         }
         return activeFile;
+    }
+
+    /**
+     * Read the reference to an already-published Ghost post from a note's frontmatter.
+     */
+    private getExistingRef(file: TFile): GhostPostRef | undefined {
+        const cache = this.app.metadataCache.getFileCache(file);
+        const frontmatter: Record<string, unknown> = cache?.frontmatter ?? {};
+        const id = frontmatter[FRONTMATTER_KEYS.id];
+        if (typeof id !== 'string' || id === '') {
+            return undefined;
+        }
+        const updatedAt = frontmatter[FRONTMATTER_KEYS.updatedAt];
+        return {
+            id,
+            updatedAt: typeof updatedAt === 'string' ? updatedAt : undefined
+        };
     }
 
     /**
@@ -97,28 +196,36 @@ export default class GhostyPostyPlugin extends Plugin {
             }
         }
 
+        // Visibility (public | members | paid); defaults to public
+        const rawVisibility = frontmatter.visibility;
+        const visibility: PostVisibility =
+            rawVisibility === 'members' || rawVisibility === 'paid' || rawVisibility === 'public'
+                ? rawVisibility
+                : 'public';
+
         return {
             title,
             slug,
             tags,
             status,
-            publishedAt
+            publishedAt,
+            visibility,
+            existing: this.getExistingRef(file)
         };
     }
 
     /**
-     * Main publish workflow
+     * Publish (or update) a note to Ghost.
      */
-    private async publishCurrentNote() {
+    private async publishNote(file: TFile) {
         // Check if settings are configured
         if (!this.settings.ghostUrl || !this.settings.apiKey) {
-            new Notice('Please configure your ghost credentials in settings first');
+            new Notice('Please configure your Ghost credentials in settings first');
             return;
         }
 
-        // Get the active file
-        const file = this.getActiveFile();
-        if (!file) {
+        if (file.extension !== 'md') {
+            new Notice('The current file is not a .md file');
             return;
         }
 
@@ -142,13 +249,101 @@ export default class GhostyPostyPlugin extends Plugin {
                 conversionResult,
                 this.settings.ghostUrl,
                 this.settings.apiKey,
-                () => {
-                    // Success callback - archive the note if configured
-                    void this.archiveNote(file);
+                (post, wasCreate) => {
+                    void this.onPublishSuccess(file, post, wasCreate);
                 }
             ).open();
         } catch (error) {
             new Notice(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+    }
+
+    /**
+     * After a successful publish/update: record the post reference in frontmatter,
+     * and archive the note (only on first publish).
+     */
+    private async onPublishSuccess(file: TFile, post: GhostPostResult, wasCreate: boolean): Promise<void> {
+        await this.writePostRef(file, post);
+        if (wasCreate) {
+            await this.archiveNote(file);
+        }
+    }
+
+    /**
+     * Store the Ghost post id/url/updated_at in the note's frontmatter so future
+     * publishes update the same post and sync can detect server-side changes.
+     */
+    private async writePostRef(file: TFile, post: GhostPostResult): Promise<void> {
+        try {
+            await this.app.fileManager.processFrontMatter(file, (fm) => {
+                fm[FRONTMATTER_KEYS.id] = post.id;
+                fm[FRONTMATTER_KEYS.url] = post.url;
+                fm[FRONTMATTER_KEYS.updatedAt] = post.updated_at;
+            });
+        } catch (error) {
+            new Notice(`Published, but failed to update frontmatter: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+    }
+
+    /**
+     * Pull the latest version of a published note from Ghost back into the vault.
+     */
+    private async syncNote(file: TFile) {
+        if (!this.settings.ghostUrl || !this.settings.apiKey) {
+            new Notice('Please configure your Ghost credentials in settings first');
+            return;
+        }
+
+        const ref = this.getExistingRef(file);
+        if (!ref) {
+            new Notice('This note has not been published to Ghost yet');
+            return;
+        }
+
+        const api = new GhostAPI(this.settings.ghostUrl, this.settings.apiKey);
+        const result = await api.getPost(ref.id);
+        if (!result.success) {
+            new Notice(`Failed to fetch post from Ghost: ${result.error}`);
+            return;
+        }
+
+        new SyncModal(this.app, result.post, ref.updatedAt, () => {
+            void this.applySync(file, result.post);
+        }).open();
+    }
+
+    /**
+     * Overwrite the note body with Ghost's content and refresh tracked frontmatter.
+     */
+    private async applySync(file: TFile, post: GhostPostResult): Promise<void> {
+        try {
+            const markdown = post.html ? htmlToMarkdown(post.html) : '';
+
+            // Replace the note body while preserving existing frontmatter.
+            await this.app.vault.process(file, (data) => {
+                const frontmatterMatch = data.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/);
+                const frontmatter = frontmatterMatch ? frontmatterMatch[0] : '';
+                return `${frontmatter}${frontmatter && !frontmatter.endsWith('\n') ? '\n' : ''}${markdown}\n`;
+            });
+
+            // Refresh tracked + editable frontmatter from the server copy.
+            await this.app.fileManager.processFrontMatter(file, (fm) => {
+                fm[FRONTMATTER_KEYS.id] = post.id;
+                fm[FRONTMATTER_KEYS.url] = post.url;
+                fm[FRONTMATTER_KEYS.updatedAt] = post.updated_at;
+                fm.title = post.title;
+                fm.status = post.status;
+                if (post.visibility) {
+                    fm.visibility = post.visibility;
+                }
+                if (Array.isArray(post.tags)) {
+                    fm.tags = post.tags.map((t) => t.name);
+                }
+            });
+
+            new Notice('Synced from Ghost');
+        } catch (error) {
+            new Notice(`Failed to sync: ${error instanceof Error ? error.message : 'Unknown error'}`);
         }
     }
 

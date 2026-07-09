@@ -1,6 +1,15 @@
 import { App, Modal, Setting, Notice, Vault, TFile, MetadataCache } from 'obsidian';
-import { PostMetadata, GhostPostPayload, PostStatus, ImageReference } from './types';
-import { GhostAPI } from './ghost-api';
+import {
+    PostMetadata,
+    GhostPostPayload,
+    GhostPostResult,
+    PostStatus,
+    PostVisibility,
+    DeliveryMode,
+    ImageReference,
+    GhostNewsletter
+} from './types';
+import { GhostAPI, PublishOptions } from './ghost-api';
 import { ConversionResult, replaceImageUrls } from './markdown-converter';
 
 export class PublishModal extends Modal {
@@ -11,19 +20,33 @@ export class PublishModal extends Modal {
     private vault: Vault;
     private metadataCache: MetadataCache;
     private sourceFile: TFile;
-    private onSuccess: (postUrl: string) => void;
+    private onSuccess: (post: GhostPostResult, wasCreate: boolean) => void;
+
+    /** True when this note already exists on Ghost (update mode). */
+    private readonly isUpdate: boolean;
 
     // Editable form values
     private editableTitle: string;
     private editableStatus: PostStatus;
     private editableTags: string;
+    private editableVisibility: PostVisibility;
     private editableFeatured: boolean = false;
     private editableScheduledDate: string = '';
+
+    // Delivery / newsletter
+    private newsletters: GhostNewsletter[] = [];
+    private deliveryMode: DeliveryMode = 'post';
+    private selectedNewsletterSlug: string = '';
+
+    // If a server-side change is detected, require a second confirming click.
+    private overwriteConfirmed: boolean = false;
 
     // UI elements
     private publishButton: HTMLButtonElement | null = null;
     private statusEl: HTMLElement | null = null;
     private scheduleDateContainer: HTMLElement | null = null;
+    private deliveryContainer: HTMLElement | null = null;
+    private newsletterPickerContainer: HTMLElement | null = null;
 
     constructor(
         app: App,
@@ -34,7 +57,7 @@ export class PublishModal extends Modal {
         conversionResult: ConversionResult,
         ghostUrl: string,
         apiKey: string,
-        onSuccess: (postUrl: string) => void
+        onSuccess: (post: GhostPostResult, wasCreate: boolean) => void
     ) {
         super(app);
         this.vault = vault;
@@ -45,11 +68,13 @@ export class PublishModal extends Modal {
         this.ghostUrl = ghostUrl;
         this.apiKey = apiKey;
         this.onSuccess = onSuccess;
+        this.isUpdate = metadata.existing !== undefined;
 
         // Initialize editable values
         this.editableTitle = metadata.title;
         this.editableStatus = metadata.status;
         this.editableTags = metadata.tags.join(', ');
+        this.editableVisibility = metadata.visibility;
     }
 
     onOpen() {
@@ -57,7 +82,12 @@ export class PublishModal extends Modal {
         contentEl.empty();
         contentEl.addClass('ghosty-posty-modal');
 
-        contentEl.createEl('h2', { text: 'Publish to ghost' });
+        contentEl.createEl('h2', { text: this.isUpdate ? 'Update on Ghost' : 'Publish to Ghost' });
+
+        if (this.isUpdate) {
+            const note = contentEl.createDiv({ cls: 'ghosty-posty-field' });
+            note.createEl('span', { text: 'This note is already on Ghost — publishing updates the existing post.' });
+        }
 
         // Editable fields section
         const formSection = contentEl.createDiv({ cls: 'ghosty-posty-form' });
@@ -82,6 +112,7 @@ export class PublishModal extends Modal {
                 .onChange(value => {
                     this.editableStatus = value as PostStatus;
                     this.toggleScheduleDateVisibility();
+                    this.toggleDeliveryVisibility();
                 }));
 
         // Schedule date picker (hidden by default)
@@ -103,6 +134,19 @@ export class PublishModal extends Modal {
             });
         this.toggleScheduleDateVisibility();
 
+        // Visibility dropdown
+        new Setting(formSection)
+            .setName('Visibility')
+            .setDesc('Who can read this post')
+            .addDropdown(dropdown => dropdown
+                .addOption('public', 'Public')
+                .addOption('members', 'Members (all signed-in members)')
+                .addOption('paid', 'Paid members only')
+                .setValue(this.editableVisibility)
+                .onChange(value => {
+                    this.editableVisibility = value as PostVisibility;
+                }));
+
         // Featured toggle
         new Setting(formSection)
             .setName('Featured')
@@ -122,6 +166,10 @@ export class PublishModal extends Modal {
                 .onChange(value => {
                     this.editableTags = value;
                 }));
+
+        // Delivery / newsletter section (populated async once newsletters load)
+        this.deliveryContainer = formSection.createDiv({ cls: 'ghosty-posty-delivery' });
+        void this.buildDeliverySection();
 
         // Image info section
         const totalImages = this.conversionResult.images.length +
@@ -162,12 +210,67 @@ export class PublishModal extends Modal {
         cancelButton.addEventListener('click', () => this.close());
 
         this.publishButton = buttonContainer.createEl('button', {
-            text: 'Publish',
+            text: this.isUpdate ? 'Update' : 'Publish',
             cls: 'mod-cta'
         });
         this.publishButton.addEventListener('click', () => {
             void this.publish();
         });
+    }
+
+    /**
+     * Fetch the site's active newsletters and build the delivery selector.
+     * If the site has no newsletters, the section stays hidden and posts
+     * simply publish to the web (the existing behaviour).
+     */
+    private async buildDeliverySection(): Promise<void> {
+        if (!this.deliveryContainer) {
+            return;
+        }
+
+        const api = new GhostAPI(this.ghostUrl, this.apiKey);
+        this.newsletters = await api.getNewsletters();
+
+        this.deliveryContainer.empty();
+
+        if (this.newsletters.length === 0) {
+            this.toggleDeliveryVisibility();
+            return;
+        }
+
+        this.selectedNewsletterSlug = this.newsletters[0].slug;
+
+        new Setting(this.deliveryContainer)
+            .setName('Publish as')
+            .setDesc('Post, email, or both')
+            .addDropdown(dropdown => dropdown
+                .addOption('post', 'Post only')
+                .addOption('newsletter_only', 'Email only')
+                .addOption('post_and_newsletter', 'Post and email')
+                .setValue(this.deliveryMode)
+                .onChange(value => {
+                    this.deliveryMode = value as DeliveryMode;
+                    this.toggleNewsletterPickerVisibility();
+                }));
+
+        // Newsletter picker — only needed when the site has more than one.
+        this.newsletterPickerContainer = this.deliveryContainer.createDiv({ cls: 'ghosty-posty-newsletter-picker' });
+        if (this.newsletters.length > 1) {
+            new Setting(this.newsletterPickerContainer)
+                .setName('Newsletter')
+                .addDropdown(dropdown => {
+                    for (const nl of this.newsletters) {
+                        dropdown.addOption(nl.slug, nl.name);
+                    }
+                    dropdown.setValue(this.selectedNewsletterSlug);
+                    dropdown.onChange(value => {
+                        this.selectedNewsletterSlug = value;
+                    });
+                });
+        }
+
+        this.toggleDeliveryVisibility();
+        this.toggleNewsletterPickerVisibility();
     }
 
     private getFilename(path: string): string {
@@ -200,11 +303,31 @@ export class PublishModal extends Modal {
      */
     private toggleScheduleDateVisibility() {
         if (this.scheduleDateContainer) {
-            if (this.editableStatus === 'scheduled') {
-                this.scheduleDateContainer.removeClass('is-hidden');
-            } else {
-                this.scheduleDateContainer.addClass('is-hidden');
-            }
+            this.scheduleDateContainer.toggleClass('is-hidden', this.editableStatus !== 'scheduled');
+        }
+    }
+
+    /**
+     * Newsletters can only be emailed when a post actually goes out (published
+     * or scheduled), and only when the site has newsletters configured.
+     */
+    private toggleDeliveryVisibility() {
+        if (!this.deliveryContainer) {
+            return;
+        }
+        const canSend = this.newsletters.length > 0 &&
+            (this.editableStatus === 'published' || this.editableStatus === 'scheduled');
+        this.deliveryContainer.toggleClass('is-hidden', !canSend);
+        if (!canSend) {
+            // Reset to a safe default when the option is unavailable.
+            this.deliveryMode = 'post';
+        }
+    }
+
+    private toggleNewsletterPickerVisibility() {
+        if (this.newsletterPickerContainer) {
+            const needsPicker = this.newsletters.length > 1 && this.deliveryMode !== 'post';
+            this.newsletterPickerContainer.toggleClass('is-hidden', !needsPicker);
         }
     }
 
@@ -302,14 +425,48 @@ export class PublishModal extends Modal {
         return { success: true, urlMap };
     }
 
+    private resetButton() {
+        this.setButtonsEnabled(true);
+        if (this.publishButton) {
+            this.publishButton.textContent = this.isUpdate ? 'Update' : 'Publish';
+        }
+    }
+
     private async publish() {
         this.setButtonsEnabled(false);
         if (this.publishButton) {
-            this.publishButton.textContent = 'Publishing...';
+            this.publishButton.textContent = this.isUpdate ? 'Updating...' : 'Publishing...';
         }
 
         try {
             const api = new GhostAPI(this.ghostUrl, this.apiKey);
+
+            // For updates, fetch the current post first: Ghost needs its
+            // updated_at for collision detection, and it lets us warn the user
+            // if the post changed on the web since they last synced.
+            let currentUpdatedAt: string | undefined;
+            if (this.isUpdate && this.metadata.existing) {
+                this.setStatus('Checking Ghost for changes...');
+                const fetched = await api.getPost(this.metadata.existing.id);
+                if (!fetched.success) {
+                    new Notice(`Error: ${fetched.error}`);
+                    this.setStatus(`Error: ${fetched.error}`);
+                    this.resetButton();
+                    return;
+                }
+                currentUpdatedAt = fetched.post.updated_at;
+
+                const lastSeen = this.metadata.existing.updatedAt;
+                if (lastSeen && lastSeen !== currentUpdatedAt && !this.overwriteConfirmed) {
+                    this.overwriteConfirmed = true;
+                    this.setStatus('⚠ This post was edited on Ghost since you last synced. Updating will overwrite those changes. Click Update again to overwrite, or Cancel and sync first.');
+                    this.setButtonsEnabled(true);
+                    if (this.publishButton) {
+                        this.publishButton.textContent = 'Overwrite & update';
+                    }
+                    return;
+                }
+            }
 
             // Collect all images to upload
             const allImages: ImageReference[] = [
@@ -327,10 +484,7 @@ export class PublishModal extends Modal {
                 if (!uploadResult.success) {
                     new Notice(`Error: ${uploadResult.error}`);
                     this.setStatus(`Error: ${uploadResult.error}`);
-                    this.setButtonsEnabled(true);
-                    if (this.publishButton) {
-                        this.publishButton.textContent = 'Publish';
-                    }
+                    this.resetButton();
                     return;
                 }
 
@@ -343,7 +497,7 @@ export class PublishModal extends Modal {
                 html = replaceImageUrls(html, uploadResult.urlMap);
             }
 
-            this.setStatus('Creating post...');
+            this.setStatus(this.isUpdate ? 'Updating post...' : 'Creating post...');
 
             // Parse tags from comma-separated string
             const tags = this.editableTags
@@ -361,43 +515,50 @@ export class PublishModal extends Modal {
                 publishedAt = this.metadata.publishedAt;
             }
 
+            const emailOnly = this.deliveryMode === 'newsletter_only';
+
             const payload: GhostPostPayload = {
                 posts: [{
                     title: this.editableTitle,
                     html: html,
                     status: this.editableStatus,
+                    visibility: this.editableVisibility,
                     ...(this.metadata.slug && { slug: this.metadata.slug }),
                     ...(tags.length > 0 && {
                         tags: tags.map(name => ({ name }))
                     }),
                     ...(publishedAt && { published_at: publishedAt }),
                     ...(featureImageUrl && { feature_image: featureImageUrl }),
-                    ...(this.editableFeatured && { featured: true })
+                    ...(this.editableFeatured && { featured: true }),
+                    ...(emailOnly && { email_only: true }),
+                    ...(currentUpdatedAt && { updated_at: currentUpdatedAt })
                 }]
             };
 
-            const result = await api.createPost(payload);
+            // Wire up newsletter delivery
+            const options: PublishOptions = {};
+            if (this.deliveryMode !== 'post' && this.selectedNewsletterSlug) {
+                options.newsletterSlug = this.selectedNewsletterSlug;
+            }
+
+            const result = this.isUpdate && this.metadata.existing
+                ? await api.updatePost(this.metadata.existing.id, payload, options)
+                : await api.createPost(payload, options);
 
             if (result.success) {
-                new Notice(`Post published successfully!`);
-                this.onSuccess(result.post.url);
+                new Notice(this.isUpdate ? 'Post updated successfully!' : 'Post published successfully!');
+                this.onSuccess(result.post, !this.isUpdate);
                 this.close();
             } else {
-                new Notice(`Failed to publish: ${result.error}`);
+                new Notice(`Failed: ${result.error}`);
                 this.setStatus(`Error: ${result.error}`);
-                this.setButtonsEnabled(true);
-                if (this.publishButton) {
-                    this.publishButton.textContent = 'Publish';
-                }
+                this.resetButton();
             }
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
             new Notice(`Error: ${errorMessage}`);
             this.setStatus(`Error: ${errorMessage}`);
-            this.setButtonsEnabled(true);
-            if (this.publishButton) {
-                this.publishButton.textContent = 'Publish';
-            }
+            this.resetButton();
         }
     }
 

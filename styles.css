@@ -77,6 +77,15 @@
     margin-bottom: 15px;
 }
 
+/* Delivery / newsletter section */
+.ghosty-posty-delivery.is-hidden {
+    display: none;
+}
+
+.ghosty-posty-newsletter-picker.is-hidden {
+    display: none;
+}
+
 /* Schedule date picker */
 .ghosty-posty-schedule-picker {
     background: var(--background-secondary);
