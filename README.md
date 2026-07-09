@@ -35,6 +35,14 @@ Control your posts with YAML frontmatter:
 ### Cross-Platform
 Works on Obsidian Desktop (Mac, Windows, Linux) and Mobile (iOS, Android).
 
+## Development
+
+- `npm run dev` — build in watch mode
+- `npm run build` — production build (`main.js`)
+- `npm test` — run the unit tests
+
+Tests use Node's built-in test runner (via [`tsx`](https://github.com/privatenumber/tsx)) and live alongside the code as `src/*.test.ts`. They cover the pure logic that's most likely to regress across builds — the Markdown-to-HTML conversion pipeline (frontmatter stripping, image extraction, featured-image detection, wiki links, embeds) and the frontmatter-key contract used for post updates and syncing.
+
 ## Installation
 
 1. Download the latest release files:
