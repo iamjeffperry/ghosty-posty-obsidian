@@ -139,7 +139,7 @@ export class PublishModal extends Modal {
             .setName('Visibility')
             .setDesc('Who can read this post')
             .addDropdown(dropdown => dropdown
-                .addOption('public', 'Public (everyone)')
+                .addOption('public', 'Public')
                 .addOption('members', 'Members (all signed-in members)')
                 .addOption('paid', 'Paid members only')
                 .setValue(this.editableVisibility)
@@ -241,12 +241,12 @@ export class PublishModal extends Modal {
         this.selectedNewsletterSlug = this.newsletters[0].slug;
 
         new Setting(this.deliveryContainer)
-            .setName('Send as')
-            .setDesc('Publish to the web, email your newsletter, or both')
+            .setName('Publish as')
+            .setDesc('Post, email, or both')
             .addDropdown(dropdown => dropdown
-                .addOption('post', 'Web post only')
-                .addOption('post_and_newsletter', 'Web post + email newsletter')
-                .addOption('newsletter_only', 'Email newsletter only')
+                .addOption('post', 'Post only')
+                .addOption('newsletter_only', 'Email only')
+                .addOption('post_and_newsletter', 'Post and email')
                 .setValue(this.deliveryMode)
                 .onChange(value => {
                     this.deliveryMode = value as DeliveryMode;
