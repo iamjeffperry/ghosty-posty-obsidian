@@ -15,7 +15,7 @@ export type PostResult =
 /**
  * Convert a hex string to Uint8Array
  */
-function hexToBytes(hex: string): Uint8Array {
+function hexToBytes(hex: string) {
     const bytes = new Uint8Array(hex.length / 2);
     for (let i = 0; i < hex.length; i += 2) {
         bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
@@ -80,7 +80,7 @@ async function generateGhostToken(apiKey: string): Promise<string> {
     // Import the key for HMAC-SHA256
     const cryptoKey = await crypto.subtle.importKey(
         'raw',
-        secretBytes.buffer as ArrayBuffer,
+        secretBytes,
         { name: 'HMAC', hash: 'SHA-256' },
         false,
         ['sign']

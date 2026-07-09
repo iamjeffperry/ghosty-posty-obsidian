@@ -275,7 +275,7 @@ export default class GhostyPostyPlugin extends Plugin {
      */
     private async writePostRef(file: TFile, post: GhostPostResult): Promise<void> {
         try {
-            await this.app.fileManager.processFrontMatter(file, (fm) => {
+            await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
                 fm[FRONTMATTER_KEYS.id] = post.id;
                 fm[FRONTMATTER_KEYS.url] = post.url;
                 fm[FRONTMATTER_KEYS.updatedAt] = post.updated_at;
@@ -327,7 +327,7 @@ export default class GhostyPostyPlugin extends Plugin {
             });
 
             // Refresh tracked + editable frontmatter from the server copy.
-            await this.app.fileManager.processFrontMatter(file, (fm) => {
+            await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
                 fm[FRONTMATTER_KEYS.id] = post.id;
                 fm[FRONTMATTER_KEYS.url] = post.url;
                 fm[FRONTMATTER_KEYS.updatedAt] = post.updated_at;
