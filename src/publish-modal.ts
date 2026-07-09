@@ -134,19 +134,6 @@ export class PublishModal extends Modal {
             });
         this.toggleScheduleDateVisibility();
 
-        // Visibility dropdown
-        new Setting(formSection)
-            .setName('Visibility')
-            .setDesc('Who can read this post')
-            .addDropdown(dropdown => dropdown
-                .addOption('public', 'Public')
-                .addOption('members', 'Members (all signed-in members)')
-                .addOption('paid', 'Paid members only')
-                .setValue(this.editableVisibility)
-                .onChange(value => {
-                    this.editableVisibility = value as PostVisibility;
-                }));
-
         // Featured toggle
         new Setting(formSection)
             .setName('Featured')
@@ -165,6 +152,19 @@ export class PublishModal extends Modal {
                 .setValue(this.editableTags)
                 .onChange(value => {
                     this.editableTags = value;
+                }));
+
+        // Visibility dropdown
+        new Setting(formSection)
+            .setName('Visibility')
+            .setDesc('Who can read this post')
+            .addDropdown(dropdown => dropdown
+                .addOption('public', 'Public')
+                .addOption('members', 'Members (all signed-in members)')
+                .addOption('paid', 'Paid members only')
+                .setValue(this.editableVisibility)
+                .onChange(value => {
+                    this.editableVisibility = value as PostVisibility;
                 }));
 
         // Delivery / newsletter section (populated async once newsletters load)
