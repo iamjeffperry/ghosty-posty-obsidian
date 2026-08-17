@@ -16,12 +16,11 @@ function escapeHtmlAttribute(value: string): string {
 
 /**
  * Build the Markdown-to-HTML converter, configured to match Ghost's needs:
- * GFM (tables, task lists, strikethrough, fenced code blocks), emoji
- * shortcodes, and links that open in a new window.
+ * GFM, emoji shortcodes, and links that open in a new window.
  */
 function createConverter(): Marked {
-    // Map :shortcode: names to emoji characters (GitHub's emoji set)
     const emojis: Record<string, string> = {};
+
     for (const entry of gemoji) {
         for (const name of entry.names) {
             emojis[name] = entry.emoji;
@@ -29,59 +28,114 @@ function createConverter(): Marked {
     }
 
     const converter = new Marked();
-    converter.use(markedEmoji({ emojis, renderer: (token) => token.emoji }));
+
+    converter.use(
+        markedEmoji({
+            emojis,
+            renderer: (token) => token.emoji
+        })
+    );
+
     converter.use({
         gfm: true,
         breaks: false,
         renderer: {
             link({ href, title, tokens }): string {
                 const text = this.parser.parseInline(tokens);
-                const titleAttr = title ? ` title="${escapeHtmlAttribute(title)}"` : '';
+
+                const titleAttr = title
+                    ? ` title="${escapeHtmlAttribute(title)}"`
+                    : '';
+
                 return `<a href="${escapeHtmlAttribute(href)}"${titleAttr} target="_blank" rel="noopener noreferrer">${text}</a>`;
             }
         }
     });
+
     return converter;
 }
 
 const markdownConverter = createConverter();
 
 /**
- * Remove YAML frontmatter from markdown content
- * Returns the content without frontmatter and the frontmatter end position
+ * Remove YAML frontmatter from markdown content.
  */
-function stripFrontmatter(markdown: string): { content: string; frontmatterEndIndex: number } {
-    const frontmatterRegex = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/;
+function stripFrontmatter(
+    markdown: string
+): {
+    content: string;
+    frontmatterEndIndex: number;
+} {
+    const frontmatterRegex =
+        /^---\r?\n[\s\S]*?\r?\n---\r?\n?/;
+
     const match = markdown.match(frontmatterRegex);
+
     if (match) {
         return {
             content: markdown.slice(match[0].length),
             frontmatterEndIndex: match[0].length
         };
     }
-    return { content: markdown, frontmatterEndIndex: 0 };
+
+    return {
+        content: markdown,
+        frontmatterEndIndex: 0
+    };
 }
 
 /**
- * Check if a path is a local file (not an external URL)
+ * Find the first standalone external URL in the Markdown body.
+ *
+ * A standalone URL means the entire non-empty line is just:
+ *
+ * https://example.com/article
+ *
+ * This lets us distinguish a link-post destination from links that may
+ * appear naturally inside paragraphs.
+ */
+function findFirstStandaloneUrl(
+    markdown: string
+): string | null {
+    const lines = markdown.split(/\r?\n/);
+
+    for (const line of lines) {
+        const trimmed = line.trim();
+
+        if (/^https?:\/\/\S+$/.test(trimmed)) {
+            return trimmed;
+        }
+    }
+
+    return null;
+}
+
+/**
+ * Check if a path is a local file rather than an external URL.
  */
 function isLocalPath(path: string): boolean {
-    return !path.startsWith('http://') && !path.startsWith('https://') && !path.startsWith('data:');
+    return (
+        !path.startsWith('http://') &&
+        !path.startsWith('https://') &&
+        !path.startsWith('data:')
+    );
 }
 
 /**
- * Extract all images from markdown content
- * Handles both ![alt](path) and ![[path]] syntax
+ * Extract all images from markdown content.
+ * Handles both ![alt](path) and ![[path]] syntax.
  */
-function extractAllImages(markdown: string): ImageReference[] {
+function extractAllImages(
+    markdown: string
+): ImageReference[] {
     const images: ImageReference[] = [];
 
-    // Strip frontmatter first
     const { content } = stripFrontmatter(markdown);
 
-    // Find the first non-empty line to determine featured image
     const lines = content.split(/\r?\n/);
+
     let firstContentLineIndex = -1;
+
     for (let i = 0; i < lines.length; i++) {
         if (lines[i].trim() !== '') {
             firstContentLineIndex = i;
@@ -89,20 +143,30 @@ function extractAllImages(markdown: string): ImageReference[] {
         }
     }
 
-    // Match standard markdown images: ![alt](path)
-    const markdownImageRegex = /!\[([^\]]*)\]\(([^)]+)\)/g;
+    // Standard Markdown images: ![alt](path)
+    const markdownImageRegex =
+        /!\[([^\]]*)\]\(([^)]+)\)/g;
+
     let match;
-    while ((match = markdownImageRegex.exec(content)) !== null) {
+
+    while (
+        (match = markdownImageRegex.exec(content)) !== null
+    ) {
         const path = match[2];
+
         if (isLocalPath(path)) {
-            // Determine if this is on the first content line
-            const beforeMatch = content.substring(0, match.index);
-            const lineNumber = beforeMatch.split(/\r?\n/).length - 1;
-            const isFirstLine = lineNumber === firstContentLineIndex;
+            const beforeMatch =
+                content.substring(0, match.index);
+
+            const lineNumber =
+                beforeMatch.split(/\r?\n/).length - 1;
+
+            const isFirstLine =
+                lineNumber === firstContentLineIndex;
 
             images.push({
                 originalSyntax: match[0],
-                path: path,
+                path,
                 alt: match[1],
                 isEmbed: false,
                 isFirstLine
@@ -110,23 +174,41 @@ function extractAllImages(markdown: string): ImageReference[] {
         }
     }
 
-    // Match Obsidian embed images: ![[path]] or ![[path|alt]]
-    const embedImageRegex = /!\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
-    while ((match = embedImageRegex.exec(content)) !== null) {
+    // Obsidian embeds: ![[image.png]]
+    const embedImageRegex =
+        /!\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
+
+    while (
+        (match = embedImageRegex.exec(content)) !== null
+    ) {
         const path = match[1];
-        // Check if it looks like an image file
-        const ext = path.split('.').pop()?.toLowerCase() || '';
-        const imageExtensions = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'];
+
+        const ext =
+            path.split('.').pop()?.toLowerCase() || '';
+
+        const imageExtensions = [
+            'png',
+            'jpg',
+            'jpeg',
+            'gif',
+            'webp',
+            'svg',
+            'bmp'
+        ];
 
         if (imageExtensions.includes(ext)) {
-            // Determine if this is on the first content line
-            const beforeMatch = content.substring(0, match.index);
-            const lineNumber = beforeMatch.split(/\r?\n/).length - 1;
-            const isFirstLine = lineNumber === firstContentLineIndex;
+            const beforeMatch =
+                content.substring(0, match.index);
+
+            const lineNumber =
+                beforeMatch.split(/\r?\n/).length - 1;
+
+            const isFirstLine =
+                lineNumber === firstContentLineIndex;
 
             images.push({
                 originalSyntax: match[0],
-                path: path,
+                path,
                 alt: match[2] || '',
                 isEmbed: true,
                 isFirstLine
@@ -138,28 +220,46 @@ function extractAllImages(markdown: string): ImageReference[] {
 }
 
 /**
- * Convert Obsidian-specific wiki links to plain text
+ * Convert Obsidian wiki links to plain text.
+ *
  * [[Page Name]] -> Page Name
  * [[Page Name|Display Text]] -> Display Text
  */
-function convertWikiLinks(markdown: string): string {
-    return markdown.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_match: string, link: string, display: string | undefined) => {
-        return display || link;
-    });
+function convertWikiLinks(
+    markdown: string
+): string {
+    return markdown.replace(
+        /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
+        (
+            _match: string,
+            link: string,
+            display: string | undefined
+        ) => {
+            return display || link;
+        }
+    );
 }
 
 /**
- * Convert Obsidian image embeds to standard markdown syntax
+ * Convert Obsidian image embeds to standard Markdown.
+ *
  * ![[image.png]] -> ![](image.png)
- * ![[image.png|alt text]] -> ![alt text](image.png)
- * Paths with spaces are URL-encoded so markdown parsers handle them correctly
  */
-function convertImageEmbeds(markdown: string): string {
-    return markdown.replace(/!\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_match: string, path: string, alt: string | undefined) => {
-        // URL-encode the path to handle spaces and special characters
-        const encodedPath = encodeURI(path);
-        return `![${alt || ''}](${encodedPath})`;
-    });
+function convertImageEmbeds(
+    markdown: string
+): string {
+    return markdown.replace(
+        /!\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
+        (
+            _match: string,
+            path: string,
+            alt: string | undefined
+        ) => {
+            const encodedPath = encodeURI(path);
+
+            return `![${alt || ''}](${encodedPath})`;
+        }
+    );
 }
 
 export interface ConversionResult {
@@ -167,80 +267,155 @@ export interface ConversionResult {
     warnings: string[];
     images: ImageReference[];
     featuredImage: ImageReference | null;
+
+    /**
+     * First external URL found alone on a line in the post body.
+     *
+     * Later, #link posts will use this to generate a Ghost Bookmark card.
+     */
+    bookmarkUrl: string | null;
 }
 
 /**
- * Convert Obsidian markdown to HTML for Ghost
+ * Convert Obsidian Markdown to HTML for Ghost.
  */
-export function convertMarkdownToHtml(markdown: string): ConversionResult {
+export function convertMarkdownToHtml(
+    markdown: string
+): ConversionResult {
     const warnings: string[] = [];
 
-    // Extract all images first
-    const allImages = extractAllImages(markdown);
+    // Extract images first.
+    const allImages =
+        extractAllImages(markdown);
 
-    // Find featured image (first-line image)
-    const featuredImage = allImages.find(img => img.isFirstLine) || null;
+    const featuredImage =
+        allImages.find(
+            (img) => img.isFirstLine
+        ) || null;
 
-    // Get content images (excluding featured)
     const contentImages = featuredImage
-        ? allImages.filter(img => !img.isFirstLine)
+        ? allImages.filter(
+              (img) => !img.isFirstLine
+          )
         : allImages;
 
-    // Process markdown
-    let { content: processed } = stripFrontmatter(markdown);
+    // Remove frontmatter.
+    let { content: processed } =
+        stripFrontmatter(markdown);
 
-    // Remove the featured image from content if it exists
+    /*
+     * Capture a standalone URL BEFORE converting Markdown to HTML.
+     *
+     * Example:
+     *
+     * https://example.com/article
+     *
+     * Some commentary here.
+     */
+    const bookmarkUrl =
+        findFirstStandaloneUrl(processed);
+
+    // Remove featured image from body.
     if (featuredImage) {
-        // Remove the featured image line
-        const lines = processed.split(/\r?\n/);
-        const filteredLines = lines.filter((line, index) => {
-            // Find the first non-empty line
-            let firstNonEmptyIndex = -1;
-            for (let i = 0; i < lines.length; i++) {
-                if (lines[i].trim() !== '') {
-                    firstNonEmptyIndex = i;
-                    break;
+        const lines =
+            processed.split(/\r?\n/);
+
+        const filteredLines = lines.filter(
+            (line, index) => {
+                let firstNonEmptyIndex = -1;
+
+                for (
+                    let i = 0;
+                    i < lines.length;
+                    i++
+                ) {
+                    if (
+                        lines[i].trim() !== ''
+                    ) {
+                        firstNonEmptyIndex = i;
+                        break;
+                    }
                 }
+
+                return !(
+                    index ===
+                        firstNonEmptyIndex &&
+                    line.includes(
+                        featuredImage.originalSyntax
+                    )
+                );
             }
-            // Remove if this is the first non-empty line and contains the featured image
-            return !(index === firstNonEmptyIndex && line.includes(featuredImage.originalSyntax));
-        });
-        processed = filteredLines.join('\n');
+        );
+
+        processed =
+            filteredLines.join('\n');
     }
 
-    // Convert Obsidian embeds to standard markdown (for images)
-    processed = convertImageEmbeds(processed);
+    // Convert Obsidian image embeds.
+    processed =
+        convertImageEmbeds(processed);
 
-    // Convert wiki links to plain text
-    processed = convertWikiLinks(processed);
+    // Convert wiki links.
+    processed =
+        convertWikiLinks(processed);
 
-    // Convert to HTML using marked
-    const html = markdownConverter.parse(processed, { async: false });
+    // Convert Markdown to HTML.
+    const html =
+        markdownConverter.parse(
+            processed,
+            {
+                async: false
+            }
+        );
 
     return {
         html,
         warnings,
         images: contentImages,
-        featuredImage
+        featuredImage,
+        bookmarkUrl
     };
 }
 
 /**
- * Replace local image paths in HTML with uploaded Ghost URLs
+ * Replace local image paths in HTML with uploaded Ghost URLs.
  */
-export function replaceImageUrls(html: string, urlMap: Map<string, string>): string {
+export function replaceImageUrls(
+    html: string,
+    urlMap: Map<string, string>
+): string {
     let result = html;
 
-    for (const [localPath, ghostUrl] of urlMap) {
-        // Try both the original path and URL-encoded version
-        const pathVariants = [localPath, encodeURI(localPath)];
+    for (
+        const [localPath, ghostUrl]
+        of urlMap
+    ) {
+        const pathVariants = [
+            localPath,
+            encodeURI(localPath)
+        ];
 
-        for (const pathVariant of pathVariants) {
-            // Escape special regex characters in the path
-            const escapedPath = pathVariant.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            // Replace in src attributes
-            const regex = new RegExp(`src=["']${escapedPath}["']`, 'g');
-            result = result.replace(regex, `src="${ghostUrl}"`);
+        for (
+            const pathVariant
+            of pathVariants
+        ) {
+            const escapedPath =
+                pathVariant.replace(
+                    /[.*+?^${}()|[\]\\]/g,
+                    '\\$&'
+                );
+
+            const regex =
+                new RegExp(
+                    `src=["']${escapedPath}["']`,
+                    'g'
+                );
+
+            result =
+                result.replace(
+                    regex,
+                    `src="${ghostUrl}"`
+                );
         }
     }
 

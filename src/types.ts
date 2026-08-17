@@ -33,7 +33,8 @@ export const FRONTMATTER_KEYS = {
  */
 export interface GhostPostRef {
     id: string;
-    /** The updated_at value we last saw (from our last publish or sync). */
+
+    /** The updated_at value we last saw from Ghost. */
     updatedAt?: string;
 }
 
@@ -44,6 +45,7 @@ export interface PostMetadata {
     status: PostStatus;
     publishedAt?: string;
     visibility: PostVisibility;
+
     /** Existing Ghost post to update, if this note has been published before. */
     existing?: GhostPostRef;
 }
@@ -52,9 +54,29 @@ export interface GhostTag {
     name: string;
 }
 
+/**
+ * Content sent to Ghost.
+ *
+ * Standard Ghosty Posty posts currently use `html`.
+ *
+ * Our custom #link posts will be able to use `lexical`
+ * so that Ghost can store a real native Bookmark card.
+ */
 export interface GhostPost {
     title: string;
-    html: string;
+
+    /** HTML source used by normal posts. */
+    html?: string;
+
+    /** Native Ghost Lexical JSON used by rich #link posts. */
+    lexical?: string;
+
+    /**
+     * Setting mobiledoc to null prevents Ghost from trying to use
+     * the old editor format when we're supplying Lexical.
+     */
+    mobiledoc?: null;
+
     status: PostStatus;
     tags?: GhostTag[];
     slug?: string;
@@ -63,6 +85,7 @@ export interface GhostPost {
     featured?: boolean;
     visibility?: PostVisibility;
     email_only?: boolean;
+
     /** Required by Ghost on update for collision detection. */
     updated_at?: string;
 }
@@ -101,8 +124,13 @@ export interface GhostPostResult {
     url: string;
     status: PostStatus;
     updated_at: string;
+
     /** Present when requested with ?formats=html on a read. */
     html?: string;
+
+    /** Native editor content, when returned by Ghost. */
+    lexical?: string | null;
+
     tags?: Array<{ name: string }>;
     feature_image?: string | null;
     visibility?: PostVisibility;
