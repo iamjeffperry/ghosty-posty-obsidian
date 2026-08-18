@@ -26,6 +26,12 @@ export type BookmarkResult =
     | { success: true; data: Record<string, unknown> }
     | { success: false; error: string };
 
+
+/** Result returned when requesting embed data from Ghost. */
+export type EmbedResult =
+    | { success: true; data: Record<string, unknown> }
+    | { success: false; error: string };
+
 /**
  * Convert a hex string to Uint8Array.
  */
@@ -174,6 +180,49 @@ export class GhostAPI {
         try {
             const endpoint =
                 `/oembed/?url=${encodeURIComponent(url)}&type=bookmark`;
+
+            const response = await this.request(
+                'GET',
+                endpoint
+            );
+
+            if (response.status >= 200 && response.status < 300) {
+                return {
+                    success: true,
+                    data: response.json as Record<string, unknown>
+                };
+            }
+
+            const errorData = response.json as GhostErrorResponse;
+
+            return {
+                success: false,
+                error:
+                    errorData.errors?.[0]?.message ||
+                    `HTTP ${response.status}`
+            };
+        } catch (error) {
+            return {
+                success: false,
+                error:
+                    error instanceof Error
+                        ? error.message
+                        : 'Unknown error'
+            };
+        }
+    }
+
+
+    /**
+     * Fetch native embed data for an external media URL.
+     *
+     * Passing type=embed prevents Ghost from falling back to a Bookmark
+     * when the URL is not handled by one of its supported oEmbed providers.
+     */
+    async getEmbedData(url: string): Promise<EmbedResult> {
+        try {
+            const endpoint =
+                `/oembed/?url=${encodeURIComponent(url)}&type=embed`;
 
             const response = await this.request(
                 'GET',

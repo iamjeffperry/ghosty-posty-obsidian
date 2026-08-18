@@ -34,6 +34,11 @@ import {
     replaceStandaloneUrlWithBookmark
 } from './bookmark-card';
 
+import {
+    buildGhostEmbedHtml,
+    replaceStandaloneUrlWithEmbed
+} from './embed-card';
+
 export class PublishModal extends Modal {
     private metadata: PostMetadata;
     private conversionResult: ConversionResult;
@@ -1147,6 +1152,73 @@ export class PublishModal extends Modal {
                 }
             }
 
+
+
+            /*
+             * MEDIA POST HANDLING
+             *
+             * Only #media posts get this behavior. The same first standalone
+             * URL used by #link posts is sent back to Ghost's oEmbed endpoint,
+             * this time requesting a real Embed rather than a Bookmark.
+             *
+             * YouTube, Vimeo, Spotify, and any other provider Ghost natively
+             * supports can therefore become a playable Ghost Embed card.
+             */
+            const isMediaPost =
+                tags.includes('#media');
+
+            if (
+                isMediaPost &&
+                !isLinkPost &&
+                bookmarkUrl
+            ) {
+                this.setStatus(
+                    'Creating media embed...'
+                );
+
+                const embedResult =
+                    await api
+                        .getEmbedData(
+                            bookmarkUrl
+                        );
+
+                if (
+                    embedResult.success
+                ) {
+                    const embedHtml =
+                        buildGhostEmbedHtml(
+                            bookmarkUrl,
+                            embedResult.data
+                        );
+
+                    if (embedHtml) {
+                        html =
+                            replaceStandaloneUrlWithEmbed(
+                                html,
+                                bookmarkUrl,
+                                embedHtml
+                            );
+                    } else {
+                        console.warn(
+                            'Ghosty Posty: Ghost returned no usable embed HTML for:',
+                            bookmarkUrl
+                        );
+
+                        new Notice(
+                            'Media player could not be created. Publishing the URL normally.'
+                        );
+                    }
+                } else {
+                    console.warn(
+                        'Ghosty Posty: Unable to create media embed:',
+                        embedResult.error
+                    );
+
+                    new Notice(
+                        'Media player could not be created. Publishing the URL normally.'
+                    );
+                }
+            }
             this.setStatus(
                 this.isUpdate
                     ? 'Updating post...'
